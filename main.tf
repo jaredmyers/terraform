@@ -14,7 +14,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-1"
+  region = var.main_region
 }
 
 # Grab latest ubuntu image
@@ -22,70 +22,11 @@ data "aws_ssm_parameter" "webserver_ami" {
   name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
 }
 
-# Create VPC
-resource "aws_vpc" "ws_vpc" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
+# Module VPC, 2 subnets(1 public, 1 private)
 
-  tags = {
-    Name = "ws_vpc"
-  }
-}
-
-# Create Subnet 1, intended to be public
-# Also associates subnet with VPC
-# and enables auto IPv4 addresses w/ map public on launch
-resource "aws_subnet" "public" {
-  availability_zone       = "us-east-1a"
-  vpc_id                  = aws_vpc.ws_vpc.id
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
-  tags = {
-    Name = "public_tf"
-  }
-}
-
-# Create Subnet 2, intended to be private
-# Also associates subnet with VPC
-resource "aws_subnet" "private" {
-  availability_zone = "us-east-1a"
-  vpc_id            = aws_vpc.ws_vpc.id
-  cidr_block        = "10.0.2.0/24"
-  tags = {
-    Name = "private_tf"
-  }
-}
-
-# Create IGW for VPC internet/public access
-# Also associates IGW with VPC
-resource "aws_internet_gateway" "ws_vpc_igw" {
-  vpc_id = aws_vpc.ws_vpc.id
-  tags = {
-    Name = "tf_igw"
-  }
-}
-
-# Creates custom route table 
-# Associates itself with VPC, creates route 
-# and assoicates with the IGW
-resource "aws_route_table" "ws_rt" {
-  vpc_id = aws_vpc.ws_vpc.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.ws_vpc_igw.id
-
-  }
-  tags = {
-    Name = "tf_rt"
-  }
-}
-
-# Associates the public subnet w/the route table
-resource "aws_route_table_association" "wspub_a" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.ws_rt.id
+module "vpc" {
+  source = "./modules/vpc"
+  region = var.main_region
 }
 
 # Creates SG for 22,80 traffic in
@@ -94,7 +35,7 @@ resource "aws_route_table_association" "wspub_a" {
 resource "aws_security_group" "sg" {
   name        = "sg"
   description = "allow 22"
-  vpc_id      = aws_vpc.ws_vpc.id
+  vpc_id      = module.vpc.vpc_id
   ingress {
     description = "allow ssh"
     from_port   = 22
@@ -117,6 +58,12 @@ resource "aws_security_group" "sg" {
   }
 }
 
+# Handles taking in the public key for EC2
+resource "aws_key_pair" "webserver_key" {
+  key_name   = "ec2-webserver"
+  public_key = file("~/.ssh/ec2-webserver.pub")
+}
+
 # Creates EC2 intended to be public
 # Associates w/security group and public subnet
 # Also links the pubkey and bootstraps nginx shellscript
@@ -126,21 +73,11 @@ resource "aws_instance" "webserver" {
   key_name                    = aws_key_pair.webserver_key.key_name
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.sg.id]
-  subnet_id                   = aws_subnet.public.id
+  subnet_id                   = module.vpc.public_subnet_id
   user_data                   = fileexists("script.sh") ? file("script.sh") : null
-
 
   tags = {
     Name = "TFwebserver"
   }
 }
 
-# Handles taking in the public key
-resource "aws_key_pair" "webserver_key" {
-  key_name   = "ec2-webserver"
-  public_key = file("~/.ssh/ec2-webserver.pub")
-}
-
-output "webserver_public_ip" {
-  value = aws_instance.webserver.public_ip
-}
