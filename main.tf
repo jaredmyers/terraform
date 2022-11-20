@@ -17,13 +17,7 @@ provider "aws" {
   region = var.main_region
 }
 
-# Grab latest ubuntu image
-data "aws_ssm_parameter" "webserver_ami" {
-  name = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
-}
-
 # Module VPC, 2 subnets(1 public, 1 private)
-
 module "vpc" {
   source = "./modules/vpc"
   region = var.main_region
@@ -58,6 +52,12 @@ resource "aws_security_group" "sg" {
   }
 }
 
+# Grab latest ubuntu image
+module "ami" {
+		source = "./modules/ami"
+		region = var.main_region
+}
+
 # Handles taking in the public key for EC2
 resource "aws_key_pair" "webserver_key" {
   key_name   = "ec2-webserver"
@@ -68,13 +68,13 @@ resource "aws_key_pair" "webserver_key" {
 # Associates w/security group and public subnet
 # Also links the pubkey and bootstraps nginx shellscript
 resource "aws_instance" "webserver" {
-  ami                         = data.aws_ssm_parameter.webserver_ami.value
+  ami                         = module.ami.latest_ubuntu_ami_id
   instance_type               = "t2.micro"
   key_name                    = aws_key_pair.webserver_key.key_name
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.sg.id]
   subnet_id                   = module.vpc.public_subnet_id
-  user_data                   = fileexists("script.sh") ? file("script.sh") : null
+  user_data                   = fileexists("/bootstraps/nginx.sh") ? file("/bootstraps/nginx.sh") : null
 
   tags = {
     Name = "TFwebserver"
